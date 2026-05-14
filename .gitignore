@@ -1,0 +1,7 @@
+engine/__pycache__/evaluate.cpython-313.pyc
+engine/__pycache__/nnue.cpython-313.pyc
+engine/__pycache__/search.cpython-313.pyc
+models/nnue_best.pt
+models/nnue_latest.pt
+training/__pycache__/trainer.cpython-313.pyc
+data/sp_1778716684.txt

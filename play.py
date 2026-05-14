@@ -135,7 +135,7 @@ def play(model_path=None, move_time=2.0, human_color=chess.WHITE, ascii_mode=Fal
     engine  = Engine(ev)
     board   = chess.Board()
     history = []
-    flip    = (human_color == chess.BLACK)  # put human's pieces at the bottom
+    flip    = (human_color == chess.BLACK)  
 
     print(f"\n{'━'*54}")
     print(f"  PyNNUE Chess Engine")
@@ -241,7 +241,7 @@ def play(model_path=None, move_time=2.0, human_color=chess.WHITE, ascii_mode=Fal
             print(f"  Engine plays: {san} ({mv.uci()}) | "
                   f"eval: {score:+d} cp ({score_pawns:+.2f}p) | depth: {depth}   ")
 
-
+ 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='Play chess against PyNNUE')
     ap.add_argument('--model', default=None,         help='path to NNUE model .pt file')
@@ -262,3 +262,4 @@ if __name__ == '__main__':
         human_color = chess.BLACK if args.black else chess.WHITE,
         ascii_mode  = args.ascii,
     )
+    

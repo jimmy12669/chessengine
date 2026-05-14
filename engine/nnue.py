@@ -12,10 +12,9 @@ L1 = 1024
 L2 = 64
 L3 = 32
 
-CP_SCALE = 200.0  # scale factor for centipawn output
+CP_SCALE = 200.0 
 
 
-# maps piece type + color to an index 0-11
 def _pidx(pt: int, color: bool) -> int:
     return (pt - 1) + (0 if color == chess.WHITE else 6)
 
@@ -77,7 +76,6 @@ class NNUE(nn.Module):
         ck = torch.load(path, map_location='cpu', weights_only=False)
         m = cls()
 
-        # handle both raw state dict and wrapped {'state': ...} format for backwards compatibility
         sd = ck['state'] if isinstance(ck, dict) and 'state' in ck else ck
 
         m.load_state_dict(sd)
