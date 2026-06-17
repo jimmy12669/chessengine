@@ -24,8 +24,8 @@ USE_COLOR = _supports_color()
 
 RESET    = "\033[0m"
 BOLD     = "\033[1m"
-LIGHT_BG = "\033[48;5;229m"  # light squares
-DARK_BG  = "\033[48;5;136m"  # dark squares
+LIGHT_BG = "\033[48;5;229m"
+DARK_BG  = "\033[48;5;136m"
 WHITE_FG = "\033[97;1m"
 BLACK_FG = "\033[30;1m"
 
@@ -65,7 +65,7 @@ def render(board: chess.Board, flip: bool = False, ascii_mode: bool = False):
             if pc:
                 side   = 'w' if pc.color == chess.WHITE else 'b'
                 letter = PIECE_NAMES[pc.piece_type]
-                cell   = f"{side}{letter}"  # e.g. "wK", "bQ"
+                cell   = f"{side}{letter}"
 
                 if USE_COLOR:
                     bg = LIGHT_BG if is_light else DARK_BG
@@ -112,7 +112,6 @@ def _eval_bar(score: int, width: int = 20) -> str:
 def parse_move(board: chess.Board, text: str):
     text = text.strip()
 
-    # try UCI first (e.g. e2e4), then SAN (e.g. Nf3)
     try:
         mv = chess.Move.from_uci(text)
         if mv in board.legal_moves:
@@ -130,12 +129,30 @@ def parse_move(board: chess.Board, text: str):
     return None
 
 
+def benchmark(model_path=None, seconds=10.0):
+    ev  = Evaluator(model_path)
+    eng = Engine(ev)
+    b   = chess.Board()
+
+    print(f"\nBenchmarking for {seconds}s...")
+    mv, sc, depth = eng.go(b, move_time=seconds)
+
+    elapsed = eng.tm.elapsed()
+    nps     = int(eng.nodes / max(elapsed, 1e-9))
+
+    print(f"\n  Best move: {mv}")
+    print(f"  Score:     {sc:+d} cp ({sc/100:+.2f} pawns)")
+    print(f"  Depth:     {depth}")
+    print(f"  Nodes:     {eng.nodes:,}")
+    print(f"  NPS:       {nps:,}")
+
+
 def play(model_path=None, move_time=2.0, human_color=chess.WHITE, ascii_mode=False):
     ev      = Evaluator(model_path)
     engine  = Engine(ev)
     board   = chess.Board()
     history = []
-    flip    = (human_color == chess.BLACK)  
+    flip    = (human_color == chess.BLACK)
 
     print(f"\n{'━'*54}")
     print(f"  PyNNUE Chess Engine")
@@ -241,13 +258,14 @@ def play(model_path=None, move_time=2.0, human_color=chess.WHITE, ascii_mode=Fal
             print(f"  Engine plays: {san} ({mv.uci()}) | "
                   f"eval: {score:+d} cp ({score_pawns:+.2f}p) | depth: {depth}   ")
 
- 
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='Play chess against PyNNUE')
-    ap.add_argument('--model', default=None,         help='path to NNUE model .pt file')
-    ap.add_argument('--time',  type=float, default=2.0, help='engine thinking time in seconds (default 2)')
-    ap.add_argument('--black', action='store_true',  help='play as Black')
-    ap.add_argument('--ascii', action='store_true',  help='use ASCII pieces if unicode looks broken')
+    ap.add_argument('--model',     default=None,            help='path to NNUE model .pt file')
+    ap.add_argument('--time',      type=float, default=2.0, help='engine thinking time in seconds (default 2)')
+    ap.add_argument('--black',     action='store_true',     help='play as Black')
+    ap.add_argument('--ascii',     action='store_true',     help='use ASCII pieces if unicode looks broken')
+    ap.add_argument('--benchmark', action='store_true',     help='run 10s benchmark and exit')
     args = ap.parse_args()
 
     model_path = args.model
@@ -256,10 +274,13 @@ if __name__ == '__main__':
         if os.path.exists(default):
             model_path = default
 
+    if args.benchmark:
+        benchmark(model_path=model_path, seconds=10.0)
+        sys.exit(0)
+
     play(
         model_path  = model_path,
         move_time   = args.time,
         human_color = chess.BLACK if args.black else chess.WHITE,
         ascii_mode  = args.ascii,
     )
-    

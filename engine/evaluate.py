@@ -1,16 +1,11 @@
 import chess
 from typing import Tuple
 
-# how much each piece is worth in the middlegame vs endgame
-# bishops/knights go down in value as pieces come off, rooks go up
 MG = {chess.PAWN:82, chess.KNIGHT:337, chess.BISHOP:365,
       chess.ROOK:477, chess.QUEEN:1025, chess.KING:0}
 EG = {chess.PAWN:94, chess.KNIGHT:281, chess.BISHOP:297,
       chess.ROOK:512, chess.QUEEN: 936, chess.KING:0}
 
-# these tables tell each piece where it wants to be on the board
-# positive = good square, negative = bad square
-# laid out from white's perspective so a1 is index 0, h8 is index 63
 MG_PST = {
 chess.PAWN: [
     0,  0,  0,  0,  0,  0,  0,  0,
@@ -136,7 +131,6 @@ chess.KING: [
 ],
 }
 
-# bonus for knights on advanced central squares that enemy pawns can't attack
 OUTPOST_BONUS = [0] * 64
 for _sq in chess.SQUARES:
     _f, _r = chess.square_file(_sq), chess.square_rank(_sq)
@@ -145,12 +139,10 @@ for _sq in chess.SQUARES:
 
 
 def _msq(sq: int) -> int:
-    # flip a square vertically so black's pieces use the same tables as white
     return sq ^ 56
 
 
 def game_phase(board: chess.Board) -> float:
-    # used to blend MG and EG scores as pieces come off the board
     p = (len(board.pieces(chess.KNIGHT, chess.WHITE)) +
          len(board.pieces(chess.KNIGHT, chess.BLACK)) +
          len(board.pieces(chess.BISHOP, chess.WHITE)) +
@@ -163,7 +155,6 @@ def game_phase(board: chess.Board) -> float:
 
 
 def _pst_score(board: chess.Board) -> Tuple[int, int]:
-    # sum up material + square bonuses for every piece
     mg = eg = 0
     for sq in chess.SQUARES:
         pc = board.piece_at(sq)
@@ -192,22 +183,18 @@ def _pawn_structure(board: chess.Board) -> int:
             r = chess.square_rank(sq)
             adj = {f - 1, f + 1} & set(range(8))
 
-            # two pawns on the same file block each other
             if files.count(f) > 1:
                 score -= s * 12
 
-            # no friendly pawns on either side — easy target
             if not any(ff in adj for ff in files):
                 score -= s * 22
 
-            # backward pawn — no support from behind
             behind = r - 1 if color == chess.WHITE else r + 1
             if 0 <= behind <= 7:
                 if not any(chess.square_file(p) in adj and chess.square_rank(p) == behind
                            for p in mine):
                     score -= s * 8
 
-            # passed pawn — nothing blocking it from promoting
             if color == chess.WHITE:
                 passed = all(chess.square_rank(p) <= r for p in theirs
                              if chess.square_file(p) in ({f} | adj))
@@ -219,7 +206,6 @@ def _pawn_structure(board: chess.Board) -> int:
             if passed:
                 score += s * bonus
 
-            # phalanx — two pawns next to each other are hard to break
             if any(chess.square_file(p) in adj and chess.square_rank(p) == r for p in mine):
                 score += s * 8
 
@@ -227,7 +213,6 @@ def _pawn_structure(board: chess.Board) -> int:
 
 
 def _king_safety(board: chess.Board, phase: float) -> int:
-    # not relevant in the endgame where the king should be active
     if phase < 0.15:
         return 0
 
@@ -242,7 +227,6 @@ def _king_safety(board: chess.Board, phase: float) -> int:
         mine   = board.pieces(chess.PAWN, color)
         theirs = board.pieces(chess.PAWN, not color)
 
-        # pawns in front of the king act as a shield
         shield = 0
         for f in range(max(0, kf - 1), min(8, kf + 2)):
             for dr in (1, 2):
@@ -251,7 +235,6 @@ def _king_safety(board: chess.Board, phase: float) -> int:
                     shield += 12 - dr * 2
                     break
 
-        # open files near the king let enemy rooks/queens in
         exposed = 0
         for f in range(max(0, kf - 1), min(8, kf + 2)):
             own = any(chess.square_file(p) == f for p in mine)
@@ -259,7 +242,6 @@ def _king_safety(board: chess.Board, phase: float) -> int:
             if not own:
                 exposed += 18 if not opp else 9
 
-        # enemy pieces nearby are a danger
         attack_weight = 0
         for pt, w in ((chess.QUEEN, 4), (chess.ROOK, 2), (chess.BISHOP, 1), (chess.KNIGHT, 1)):
             for sq in board.pieces(pt, not color):
@@ -273,8 +255,6 @@ def _king_safety(board: chess.Board, phase: float) -> int:
 
 
 def _mobility(board: chess.Board) -> int:
-    # more squares reachable = better piece activity
-    # using attacks_mask so we never accidentally change board.turn
     w_mob = b_mob = 0
     for pt in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN):
         for sq in board.pieces(pt, chess.WHITE):
@@ -285,7 +265,6 @@ def _mobility(board: chess.Board) -> int:
 
 
 def _outposts(board: chess.Board) -> int:
-    # a knight on an advanced central square that can't be attacked by pawns is very strong
     score = 0
     bpawns = board.pieces(chess.PAWN, chess.BLACK)
     wpawns = board.pieces(chess.PAWN, chess.WHITE)
@@ -308,8 +287,6 @@ def _outposts(board: chess.Board) -> int:
 
 
 def _rook_bonuses(board: chess.Board) -> int:
-    # rooks love open files with no pawns blocking them
-    # two rooks defending each other are much harder to attack
     score = 0
     wpawns = board.pieces(chess.PAWN, chess.WHITE)
     bpawns = board.pieces(chess.PAWN, chess.BLACK)
@@ -325,22 +302,20 @@ def _rook_bonuses(board: chess.Board) -> int:
             own = any(chess.square_file(p) == f for p in mine)
             opp = any(chess.square_file(p) == f for p in theirs)
             if not own and not opp:
-                score += s * 25  # fully open file
+                score += s * 25 
             elif not own:
-                score += s * 12  # semi-open file
+                score += s * 12  
 
         if len(rooks) == 2:
             r0, r1 = rooks
             if (chess.square_rank(r0) == chess.square_rank(r1) or
                     chess.square_file(r0) == chess.square_file(r1)):
-                score += s * 10  # connected rooks
+                score += s * 10  
 
     return score
 
 
 def _bishop_bonuses(board: chess.Board) -> int:
-    # two bishops together cover both colors — very powerful in open positions
-    # a bishop blocked by its own pawns is nearly useless
     score = 0
     if len(board.pieces(chess.BISHOP, chess.WHITE)) >= 2:
         score += 35
@@ -359,7 +334,6 @@ def _bishop_bonuses(board: chess.Board) -> int:
 
 
 def _threats(board: chess.Board) -> int:
-    # attacking undefended pieces is worth more — we might just win them for free
     score = 0
     for color in (chess.WHITE, chess.BLACK):
         s = 1 if color == chess.WHITE else -1
@@ -375,7 +349,6 @@ def _threats(board: chess.Board) -> int:
 
 
 def _space(board: chess.Board, phase: float) -> int:
-    # who controls the center? only worth tracking in the middlegame
     if phase < 0.2:
         return 0
     w_space = b_space = 0
@@ -391,13 +364,10 @@ def _space(board: chess.Board, phase: float) -> int:
 
 
 def _tempo(board: chess.Board) -> int:
-    # small bonus for whoever's turn it is — they get to make the next threat
     return 10 if board.turn == chess.WHITE else -10
 
 
 def evaluate(board: chess.Board) -> int:
-    """Returns centipawns from white's perspective.
-    Positive means white is better, negative means black is better."""
     if board.is_checkmate():
         return -900_000 if board.turn == chess.WHITE else 900_000
     if board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
@@ -406,7 +376,6 @@ def evaluate(board: chess.Board) -> int:
     phase = game_phase(board)
     mg, eg = _pst_score(board)
 
-    # blend MG and EG scores based on how many pieces are left
     score = int(mg * phase + eg * (1.0 - phase))
 
     score += _pawn_structure(board)

@@ -18,11 +18,14 @@ MODEL_DIR = os.path.join(ROOT, 'models')
 os.makedirs(DATA_DIR,  exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-MAX_SCORE = 3000  
+MAX_SCORE      = 3000
+FILTER_SCORE   = 800
+MIN_MOVE       = 6
+MAX_MOVE       = 120
 
 
 def clamp_score(score: float) -> float:
-    return max(-MAX_SCORE, min(MAX_SCORE, score))
+    return max(-MAX_SCORE, min(MAX_SCORE, float(score)))
 
 
 def _bar(done: int, total: int, width: int = 40, prefix: str = ''):
@@ -31,18 +34,29 @@ def _bar(done: int, total: int, width: int = 40, prefix: str = ''):
     bar  = '█' * fill + '░' * (width - fill)
     print(f'\r{prefix}|{bar}| {done}/{total} ({pct*100:.1f}%)', end='', flush=True)
 
+
 def _bar_done():
     print()
 
 
-class PositionDataset(Dataset):
+def _is_quiet(board: chess.Board) -> bool:
+    if board.is_check():
+        return False
+    if any(board.is_capture(m) for m in board.legal_moves):
+        captures = [m for m in board.legal_moves if board.is_capture(m)]
+        if len(captures) > 3:
+            return False
+    return True
 
+
+class PositionDataset(Dataset):
     def __init__(self, files, max_positions: int = None):
-        seen = {}  # fen -> score, deduped (last occurrence wins)
+        seen = {}
 
         if isinstance(files, str):
             files = [files]
 
+        skipped = 0
         for path in files:
             if not os.path.exists(path):
                 print(f"  [Warning] data file not found: {path}")
@@ -54,13 +68,26 @@ class PositionDataset(Dataset):
                         continue
                     fen, sc = line.rsplit('|', 1)
                     try:
-                        score = clamp_score(float(sc))
-                        if abs(score) > MAX_SCORE:
+                        score = float(sc)
+                        fen   = fen.strip()
+
+                        if abs(score) > FILTER_SCORE:
+                            skipped += 1
                             continue
-                        chess.Board(fen.strip())  # validate the FEN
-                        seen[fen.strip()] = score
+
+                        board = chess.Board(fen)
+
+                        if board.fullmove_number < MIN_MOVE or board.fullmove_number > MAX_MOVE:
+                            skipped += 1
+                            continue
+
+                        if board.is_check():
+                            skipped += 1
+                            continue
+
+                        seen[fen] = clamp_score(score)
                     except Exception:
-                        pass  # skip bad lines silently
+                        pass
 
         samples = list(seen.items())
         random.shuffle(samples)
@@ -71,14 +98,14 @@ class PositionDataset(Dataset):
         self.samples = samples
 
         n_files = sum(1 for f in files if os.path.exists(f))
-        print(f"  [Dataset] {len(self.samples):,} unique positions from {n_files} file(s)")
+        print(f"  [Dataset] {len(self.samples):,} unique positions from {n_files} file(s) ({skipped:,} filtered)")
 
         if self.samples:
             scores = [s for _, s in self.samples]
             avg    = sum(scores) / len(scores)
             print(f"  [Dataset] score range: {min(scores):.0f} to {max(scores):.0f} cp | avg: {avg:.0f} cp")
-            extreme = sum(1 for s in scores if abs(s) > 1000)
-            print(f"  [Dataset] |score| > 1000cp: {extreme:,} ({100*extreme/len(scores):.1f}%)")
+            extreme = sum(1 for s in scores if abs(s) > 400)
+            print(f"  [Dataset] |score| > 400cp: {extreme:,} ({100*extreme/len(scores):.1f}%)")
 
     def __len__(self):
         return len(self.samples)
@@ -93,7 +120,6 @@ class PositionDataset(Dataset):
         if len(wi): w[wi] = 1.0
         if len(bi): b[bi] = 1.0
 
-        # scores are from white's perspective; flip if it's black to move
         target = score if board.turn == chess.WHITE else -score
 
         return (
@@ -106,16 +132,12 @@ class PositionDataset(Dataset):
 def wdl_loss(pred: torch.Tensor, target: torch.Tensor,
              lam: float = 0.7, scale: float = CP_SCALE,
              label_smooth: float = 0.05) -> torch.Tensor:
-
     pred = pred.squeeze()
     mse  = nn.functional.mse_loss(pred, target)
-
-    pw = torch.sigmoid(pred   / scale)
-    tw = torch.sigmoid(target / scale)
-    tw = tw * (1.0 - label_smooth) + 0.5 * label_smooth
-
-    ce = nn.functional.binary_cross_entropy(pw, tw)
-
+    pw   = torch.sigmoid(pred   / scale)
+    tw   = torch.sigmoid(target / scale)
+    tw   = tw * (1.0 - label_smooth) + 0.5 * label_smooth
+    ce   = nn.functional.binary_cross_entropy(pw, tw)
     return (1.0 - lam) * mse / (scale ** 2) + lam * ce
 
 
@@ -134,6 +156,10 @@ OPENINGS = [
     "e2e4 e7e5 g1f3 g8f6",
     "d2d4 d7d5 c2c4",
     "e2e4 e7e5 f2f4",
+    "e2e4 c7c5 g1f3",
+    "d2d4 g8f6 c2c4 e7e6",
+    "e2e4 e7e6 d2d4 d7d5",
+    "g1f3 d7d5 d2d4 g8f6 c2c4",
 ]
 
 
@@ -141,7 +167,6 @@ def _play_one_game(engine: Engine, seconds_per_move: float) -> list:
     board    = chess.Board()
     recorded = []
 
-    # play a few book moves to get varied positions
     opening = random.choice(OPENINGS).split()
     for uci in opening:
         try:
@@ -151,21 +176,27 @@ def _play_one_game(engine: Engine, seconds_per_move: float) -> list:
         except Exception:
             pass
 
-    for _ in range(300):
+    for _ in range(MAX_MOVE * 2):
         if board.is_game_over():
             break
+
         mv, score, _ = engine.go(board, move_time=seconds_per_move)
         if mv is None:
             break
 
-        clamped = clamp_score(float(score))
-        recorded.append((board.fen(), clamped))
+        move_num = board.fullmove_number
+        clamped  = clamp_score(float(score))
+
+        if (MIN_MOVE <= move_num <= MAX_MOVE
+                and abs(clamped) <= FILTER_SCORE
+                and not board.is_check()):
+            recorded.append((board.fen(), clamped))
+
         board.push(mv)
 
     res     = board.result()
     outcome = {"1-0": 1.0, "0-1": -1.0}.get(res, 0.0)
 
-    # blend engine eval with game outcome 50/50
     LAM = 0.5
     return [
         (fen, clamp_score(LAM * cp + (1 - LAM) * outcome * 600.0))
@@ -183,6 +214,7 @@ def run_selfplay(num_games: int, seconds_per_move: float,
 
     print(f"\n{'━'*60}")
     print(f"  Self-play: {num_games} games | {seconds_per_move}s/move")
+    print(f"  Filtering: moves {MIN_MOVE}-{MAX_MOVE} | |score| <= {FILTER_SCORE}cp | no checks")
     print(f"  Model: {model_path or 'classical eval'}")
     print(f"  Output: {out_path}")
     print(f"{'━'*60}")
@@ -193,9 +225,8 @@ def run_selfplay(num_games: int, seconds_per_move: float,
             for i in range(num_games):
                 pairs = _play_one_game(engine, seconds_per_move)
                 for fen, score in pairs:
-                    clamped = clamp_score(score)
-                    all_data[fen] = clamped
-                    f.write(f"{fen}|{clamped:.2f}\n")
+                    all_data[fen] = score
+                    f.write(f"{fen}|{score:.2f}\n")
                 f.flush()
                 games_done += 1
                 _bar(i + 1, num_games, prefix='  Games ')
@@ -211,7 +242,6 @@ def run_selfplay(num_games: int, seconds_per_move: float,
 
 
 class EMA:
-    """exponential moving average of model weights — produces more stable checkpoints"""
     def __init__(self, model: nn.Module, decay: float = 0.999):
         self.decay  = decay
         self.shadow = copy.deepcopy(model.state_dict())
@@ -365,16 +395,16 @@ if __name__ == '__main__':
     ap.add_argument('--selfplay',  action='store_true')
     ap.add_argument('--train',     action='store_true')
     ap.add_argument('--benchmark', action='store_true')
-    ap.add_argument('--games',  type=int,   default=200)
-    ap.add_argument('--epochs', type=int,   default=20)
-    ap.add_argument('--batch',  type=int,   default=4096)
-    ap.add_argument('--lr',     type=float, default=3e-4)
-    ap.add_argument('--lam',    type=float, default=0.7)
-    ap.add_argument('--time',   type=float, default=0.05)
-    ap.add_argument('--model',     type=str, default=None)
-    ap.add_argument('--data',      type=str, default=None)
-    ap.add_argument('--stockfish', type=str, default=None)
-    ap.add_argument('--max-pos',   type=int, default=None)
+    ap.add_argument('--games',     type=int,   default=200)
+    ap.add_argument('--epochs',    type=int,   default=20)
+    ap.add_argument('--batch',     type=int,   default=4096)
+    ap.add_argument('--lr',        type=float, default=3e-4)
+    ap.add_argument('--lam',       type=float, default=0.7)
+    ap.add_argument('--time',      type=float, default=0.05)
+    ap.add_argument('--model',     type=str,   default=None)
+    ap.add_argument('--data',      type=str,   default=None)
+    ap.add_argument('--stockfish', type=str,   default=None)
+    ap.add_argument('--max-pos',   type=int,   default=None)
     args = ap.parse_args()
 
     best = args.model or os.path.join(MODEL_DIR, 'nnue_best.pt')
